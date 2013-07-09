@@ -93,6 +93,99 @@ def log(text):
     logLines.append(text)
 
 
+def getShapes(roiService, imageId):
+    """ 
+    Returns map of tIndex: [omero.model.shape] for this image
+    """
+    result = roiService.findByImage(imageId, None)
+    timeShapeMap = {} # map of tIndex: [shape]
+    for roi in result.rois:
+        for shape in roi.copyShapes():
+            t = shape.getTheT().getValue()
+            z = shape.getTheZ().getValue()
+            if t in timeShapeMap:
+                timeShapeMap[t].append(shape)
+            else:
+                timeShapeMap[t] = [shape]
+    return timeShapeMap
+
+
+def pointsStringToXYlist(string):
+    """
+    Method for converting the string returned from omero.model.ShapeI.getPoints()
+    into list of (x,y) points.
+    E.g: "points[309,427, 366,503, 190,491] points1[309,427, 366,503, 190,491] points2[309,427, 366,503, 190,491]"
+    """
+    pointLists = string.strip().split("points")
+    if len(pointLists) < 2:
+        logger.error("Unrecognised ROI shape 'points' string: %s" % string)
+        return ""
+    firstList = pointLists[1]
+    xyList = []
+    for xy in firstList.strip(" []").split(", "):
+        x, y = xy.split(",")
+        xyList.append( ( int( x.strip() ), int(y.strip() ) ) )
+    return xyList
+
+
+def drawShapes(image, z, t, shapeMap):
+    """ Find all the shapes that apply to this plane and draw them """
+    draw = ImageDraw.Draw(image)
+    lineColour = (255, 255, 255)
+    if t in shapeMap:
+        for s in shapeMap[t]:
+            if s.getTheZ().getValue() == z:
+                if s.getStrokeColor() and s.getStrokeColor().getValue():
+                    rgbint = s.getStrokeColor().getValue()
+                    lineColour = (rgbint // 256 // 256 % 256, rgbint // 256 % 256, rgbint % 256)
+                # Rectangle
+                if type(s) == omero.model.RectI:
+                    rectX = int(s.getX().getValue())
+                    rectY = int(s.getY().getValue())
+                    rectW = int(s.getWidth().getValue())
+                    rectH = int(s.getHeight().getValue())
+                    draw.rectangle(((rectX, rectY), (rectX+rectW, rectY+rectH)), outline=lineColour)
+                # Line, Polyline, Polygon
+                elif type(s) == omero.model.PolylineI or type(s) == omero.model.LineI or type(s) == omero.model.PolygonI:
+                    points = []
+                    if type(s) == omero.model.LineI:
+                        x1 = int(s.getX1().getValue())
+                        x2 = int(s.getX2().getValue())
+                        points.append((x1,x2))
+                        y1 = int(s.getY1().getValue())
+                        y2 = int(s.getY2().getValue())
+                        points.append((y1,y2))
+                    else:
+                        points = pointsStringToXYlist(s.getPoints().getValue())
+                    for l in range(1, len(points)):
+                        x1, y1 = points[l-1]
+                        x2, y2 = points[l]
+                        draw.line((x1, y1, x2, y2), fill=lineColour, width=1)
+                    start_x, start_y = points[0]
+                    if type(s) == omero.model.PolygonI:
+                        draw.line((x2, y2, start_x, start_y), fill=lineColour, width=1)
+                # Ellipse
+                elif type(s) == omero.model.EllipseI or type(s) == omero.model.PointI:
+                    cx = int(s.getCx().getValue())
+                    cy = int(s.getCy().getValue())
+                    if type(s) == omero.model.EllipseI:
+                        rx = int(s.getRx().getValue())
+                        ry = int(s.getRy().getValue())
+                    else:
+                        rx = 2
+                        ry = 2
+                    print "cx, cx, rx, ry",cx, cx, rx, ry
+                    draw.ellipse(((cx-rx, cy-ry), (cx+rx, cy+ry)), outline=lineColour)
+                elif shape['type'] == 'Point':
+                    point_radius = 2
+                    rectX = (MAX_WIDTH/2) - point_radius
+                    rectY = int(resizeH/2) - point_radius
+                    rectW = rectX + (point_radius * 2)
+                    rectH = rectY + (point_radius * 2)
+                    draw.ellipse((rectX, rectY, rectW, rectH), outline=lineColour)
+    return image
+
+
 def downloadPlane(gateway, pixels, pixelsId, x, y, z, c, t):
     """ Retrieves the selected plane """
     rawPlane = gateway.getPlane(pixelsId, z, c, t)
@@ -277,29 +370,47 @@ def unrollPlaneMap(planeMap):
                 unrolledPlaneMap.append([int(t),int(z)])
     return unrolledPlaneMap
 
-def calculateRanges(sizeZ, sizeT, commandArgs):
+def calculateRanges(sizeZ, sizeT, commandArgs, defaultZ, shapeMap):
     """ Determines the plane to load. """
     planeMap = {}
     if "Plane_Map" not in commandArgs:
-        zStart = 0
-        zEnd = sizeZ
-        if "Z_Start" in commandArgs and commandArgs["Z_Start"] >= 0 and commandArgs["Z_Start"] < sizeZ:
-            zStart = commandArgs["Z_Start"]
-        if "Z_End" in commandArgs and commandArgs["Z_End"] >= 0 and commandArgs["Z_End"] < sizeZ and commandArgs["Z_End"] >= zStart:
-            zEnd = commandArgs["Z_End"]+1
         tStart = 0
         tEnd = sizeT-1
         if "T_Start" in commandArgs and commandArgs["T_Start"] >= 0 and commandArgs["T_Start"] < sizeT:
             tStart = commandArgs["T_Start"]
         if "T_End" in commandArgs and commandArgs["T_End"] >= 0 and commandArgs["T_End"] < sizeT and commandArgs["T_End"] >= tStart:
             tEnd = commandArgs["T_End"]+1
-        if(zEnd==zStart):
-            zEnd=zEnd+1;
         if(tEnd==tStart):
             tEnd=tEnd+1;
 
-        zRange = range(zStart, zEnd)
         tRange = range(tStart, tEnd)
+
+        zStart = None
+        zEnd = None
+        if "Z_Start" in commandArgs and commandArgs["Z_Start"] >= 0 and commandArgs["Z_Start"] < sizeZ:
+            zStart = commandArgs["Z_Start"]
+        if "Z_End" in commandArgs and commandArgs["Z_End"] >= 0 and commandArgs["Z_End"] < sizeZ and commandArgs["Z_End"] >= zStart:
+            zEnd = commandArgs["Z_End"]+1
+        # if no Z-range is specified AND we have shapes, use them to choose Zs
+        if zStart is None or zEnd is None:
+            if shapeMap is not None:
+                planeList = []
+                for t in tRange:
+                    if t in shapeMap:
+                        z_list = [shape.getTheZ().getValue() for shape in shapeMap[t]]
+                        # simply choose the first z
+                        z = min(z_list)
+                    else:
+                        z = defaultZ
+                    planeList.append([t,z])
+                return planeList
+            else:
+                zStart = defaultZ
+                zEnd = defaultZ+1
+        if(zEnd==zStart):
+            zEnd=zEnd+1;
+        zRange = range(zStart, zEnd)
+
         planeMap = buildPlaneMapFromRanges(zRange, tRange)
     else:
         map = commandArgs["Plane_Map"]
@@ -445,7 +556,15 @@ def writeMovie(commandArgs, conn):
     if "Channels" in commandArgs and validChannels(commandArgs["Channels"], sizeC):
         cRange = commandArgs["Channels"]
 
-    tzList = calculateRanges(sizeZ, sizeT, commandArgs)
+    omeroImage.setActiveChannels(map(lambda x: x+1, cRange))
+    renderingEngine = omeroImage._re
+    defaultZ = renderingEngine.getDefaultZ()
+
+    shapeMap = None
+    if "Show_ROIs" in commandArgs and commandArgs["Show_ROIs"]:
+        shapeMap = getShapes(session.getRoiService(), omeroImage.getId())
+    # if we're going to show ROIs, use them to define tzList
+    tzList = calculateRanges(sizeZ, sizeT, commandArgs, defaultZ, shapeMap)
 
     timeMap = calculateAquisitionTime(conn, pixelsId, cRange, tzList)
     if (timeMap==None):
@@ -456,8 +575,6 @@ def writeMovie(commandArgs, conn):
 
     pixelTypeString = pixels.getPixelsType().getValue()
     frameNo = 1
-    omeroImage.setActiveChannels(map(lambda x: x+1, cRange))
-    renderingEngine = omeroImage._re
 
     overlayColour = (255,255,255)
     if "Overlay_Colour" in commandArgs:
@@ -513,6 +630,8 @@ def writeMovie(commandArgs, conn):
             image = addTimePoints(time, pixels, image, overlayColour)
         if "Show_Plane_Info" in commandArgs and commandArgs["Show_Plane_Info"]:
             image = addPlaneInfo(z, t, pixels, image, overlayColour)
+        if "Show_ROIs" in commandArgs and commandArgs["Show_ROIs"]:
+            image = drawShapes(image, z, t, shapeMap)
         if "Watermark" in commandArgs and commandArgs["Watermark"].id:
             image = pasteWatermark(image, watermark)
         if format==QT:
@@ -596,6 +715,7 @@ def runAsScript():
     scripts.Int("Min_Width", description="Minimum width for output movie.", default=-1),
     scripts.Int("Min_Height", description="Minimum height for output movie.", default=-1),
     scripts.Map("Plane_Map", description="Specify the individual planes (instead of using T_Start, T_End, Z_Start and Z_End)", grouping="12"),
+    scripts.Bool("Show_ROIs", description="If true, pick first Z-plane that has shape for each frame. Also pick T if T_Start/End not set", grouping="13"),
     scripts.Object("Watermark", description="Specifiy a watermark as an Original File (png or jpeg)", 
             default=omero.model.OriginalFileI()),
     scripts.Object("Intro_Slide", description="Specifiy an Intro slide as an Original File (png or jpeg)",
