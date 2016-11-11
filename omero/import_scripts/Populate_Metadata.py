@@ -26,7 +26,7 @@ import omero
 from omero.gateway import BlitzGateway
 from omero.rtypes import rstring, rlong
 import omero.scripts as scripts
-from omero.model import PlateI, ScreenI
+from omero.model import PlateI, ScreenI, DatasetI
 
 import sys
 
@@ -35,7 +35,11 @@ from omero.util.populate_metadata import ParsingContext
 
 
 def get_original_file(conn, object_type, object_id, fileAnn_id=None):
-    if object_type == "Plate":
+    fileAnn = None
+    print 'fileAnn_id', fileAnn_id
+    if fileAnn_id is not None:
+        fileAnn = conn.getObject('FileAnnotation', fileAnn_id)
+    elif object_type == "Plate":
         omero_object = conn.getObject("Plate", int(object_id))
         if omero_object is None:
             sys.stderr.write("Error: Plate does not exist.\n")
@@ -45,17 +49,17 @@ def get_original_file(conn, object_type, object_id, fileAnn_id=None):
         if omero_object is None:
             sys.stderr.write("Error: Screen does not exist.\n")
             sys.exit(1)
-    fileAnn = None
-    print "Listing files on %s %s..." % (object_type, object_id)
-    for ann in omero_object.listAnnotations():
-        if isinstance(ann, omero.gateway.FileAnnotationWrapper):
-            fileName = ann.getFile().getName()
-            print "   FileAnnotation ID:", ann.getId(), fileName,\
-                "Size:", ann.getFile().getSize()
-            # Pick file by Ann ID (or name if ID is None)
-            if (fileAnn_id is None and fileName.endswith(".csv")) or (
-                    ann.getId() == fileAnn_id):
-                fileAnn = ann
+    if fileAnn is None:
+        print "Listing files on %s %s..." % (object_type, object_id)
+        for ann in omero_object.listAnnotations():
+            if isinstance(ann, omero.gateway.FileAnnotationWrapper):
+                fileName = ann.getFile().getName()
+                print "   FileAnnotation ID:", ann.getId(), fileName,\
+                    "Size:", ann.getFile().getSize()
+                # Pick file by Ann ID (or name if ID is None)
+                if (fileAnn_id is None and fileName.endswith(".csv")) or (
+                        ann.getId() == fileAnn_id):
+                    fileAnn = ann
     if fileAnn is None:
         sys.stderr.write("Error: File does not exist.\n")
         sys.exit(1)
@@ -80,6 +84,8 @@ def populate_metadata(client, conn, script_params):
     file_handle = provider.get_original_file_data(original_file)
     if dataType == "Plate":
         omero_object = PlateI(long(object_id), False)
+    elif dataType == "Dataset":
+        omero_object = DatasetI(long(object_id), False)
     else:
         omero_object = ScreenI(long(object_id), False)
     ctx = ParsingContext(client, omero_object, "")
@@ -89,7 +95,7 @@ def populate_metadata(client, conn, script_params):
 
 
 if __name__ == "__main__":
-    dataTypes = [rstring('Plate'), rstring('Screen')]
+    dataTypes = [rstring('Plate'), rstring('Screen'), rstring('Dataset')]
     client = scripts.client(
         'Populate_Metadata.py',
         """
