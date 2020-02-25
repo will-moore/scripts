@@ -77,7 +77,7 @@ def get_export_data(conn, script_params, image, units=None):
     rois.sort(key=lambda r: r.id.val)
     export_data = []
 
-    for roi in rois:
+    for roi in rois[:50000]:
         for shape in roi.copyShapes():
             label = unwrap(shape.getTextValue())
             # wrap label in double quotes in case it contains comma
@@ -97,11 +97,11 @@ def get_export_data(conn, script_params, image, units=None):
             # get pixel intensities
             for z in z_indexes:
                 for t in t_indexes:
-                    if z is None or t is None:
-                        stats = None
-                    else:
-                        stats = roi_service.getShapeStatsRestricted(
-                            [shape.id.val], z, t, ch_indexes)
+                    # if z is None or t is None:
+                    stats = None
+                    # else:
+                    #     stats = roi_service.getShapeStatsRestricted(
+                    #         [shape.id.val], z, t, ch_indexes)
                     for c, ch_index in enumerate(ch_indexes):
                         row_data = {
                             "image_id": image.getId(),
@@ -113,12 +113,12 @@ def get_export_data(conn, script_params, image, units=None):
                             "z": z + 1 if z is not None else "",
                             "t": t + 1 if t is not None else "",
                             "channel": ch_names[ch_index],
-                            "points": stats[0].pointsCount[c] if stats else "",
-                            "min": stats[0].min[c] if stats else "",
-                            "max": stats[0].max[c] if stats else "",
-                            "sum": stats[0].sum[c] if stats else "",
-                            "mean": stats[0].mean[c] if stats else "",
-                            "std_dev": stats[0].stdDev[c] if stats else ""
+                            # "points": stats[0].pointsCount[c] if stats else "",
+                            # "min": stats[0].min[c] if stats else "",
+                            # "max": stats[0].max[c] if stats else "",
+                            # "sum": stats[0].sum[c] if stats else "",
+                            # "mean": stats[0].mean[c] if stats else "",
+                            # "std_dev": stats[0].stdDev[c] if stats else ""
                         }
                         add_shape_coords(shape, row_data,
                                          pixel_size_x, pixel_size_y)
@@ -138,22 +138,23 @@ COLUMN_NAMES = ["image_id",
                 "channel",
                 "area",
                 "length",
-                "points",
-                "min",
-                "max",
-                "sum",
-                "mean",
-                "std_dev",
+                "borderLength",
+                # "points",
+                # "min",
+                # "max",
+                # "sum",
+                # "mean",
+                # "std_dev",
                 "X",
                 "Y",
                 "Width",
                 "Height",
-                "RadiusX",
-                "RadiusY",
-                "X1",
-                "Y1",
-                "X2",
-                "Y2",
+                # "RadiusX",
+                # "RadiusY",
+                # "X1",
+                # "Y1",
+                # "X2",
+                # "Y2",
                 "Points"]
 
 
@@ -188,6 +189,21 @@ def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
         if match is not None:
             point_list = match.group(1)
         row_data['Points'] = '"%s"' % point_list
+        row_data['borderLength'] = len(point_list)
+        x_coords = []
+        y_coords = []
+        for xy in point_list.split(", "):
+            [x, y] = xy.split(",")
+            x_coords.append(float(x))
+            y_coords.append(float(y))
+        min_x = min(x_coords)
+        min_y = min(y_coords)
+        max_x = max(x_coords)
+        max_y = max(y_coords)
+        row_data['Width'] = max_x - min_x
+        row_data['Height'] = max_y - min_y
+        row_data['X'] = min_x + (row_data['Width'] / 2)
+        row_data['Y'] = min_y + (row_data['Height'] / 2)
     if isinstance(shape, PolylineI):
         coords = point_list.split(" ")
         coords = [[float(x.strip(", ")) for x in coord.split(",", 1)]
