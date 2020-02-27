@@ -23,15 +23,19 @@
 
 
 import omero.scripts as scripts
-from omero.gateway import BlitzGateway
+from omero.gateway import BlitzGateway, FileAnnotationWrapper
+import omero
 from omero.rtypes import rlong, rint, rstring, robject, unwrap
 from omero.model import RectangleI, EllipseI, LineI, PolygonI, PolylineI, \
-    MaskI, LabelI, PointI
+    MaskI, LabelI, PointI, \
+    OriginalFileI, FileAnnotationI
+from omero.grid import ImageColumn, LongColumn, StringColumn, DoubleColumn
 from math import sqrt, pi
 import re
 
 DEFAULT_FILE_NAME = "Batch_ROI_Export.csv"
 INSIGHT_POINT_LIST_RE = re.compile(r'points\[([^\]]+)\]')
+DEFAULT_COLUMN_SIZE = 64
 
 
 def log(data):
@@ -77,7 +81,7 @@ def get_export_data(conn, script_params, image, units=None):
     rois.sort(key=lambda r: r.id.val)
     export_data = []
 
-    for roi in rois[:50000]:
+    for roi in rois:
         for shape in roi.copyShapes():
             label = unwrap(shape.getTextValue())
             # wrap label in double quotes in case it contains comma
@@ -105,7 +109,7 @@ def get_export_data(conn, script_params, image, units=None):
                     for c, ch_index in enumerate(ch_indexes):
                         row_data = {
                             "image_id": image.getId(),
-                            "image_name": '"%s"' % image_name,
+                            "image_name": image_name,   # '"%s"' % image_name,
                             "roi_id": roi.id.val,
                             "shape_id": shape.id.val,
                             "type": shape_type,
@@ -137,7 +141,7 @@ COLUMN_NAMES = ["image_id",
                 "t",
                 "channel",
                 "area",
-                "length",
+                # "length",
                 "borderLength",
                 # "points",
                 # "min",
@@ -155,7 +159,38 @@ COLUMN_NAMES = ["image_id",
                 # "Y1",
                 # "X2",
                 # "Y2",
-                "Points"]
+                # "Points"
+            ]
+
+COLUMN_TYPES = {"image_id": ImageColumn,
+                "image_name": StringColumn,
+                "roi_id": LongColumn,
+                "shape_id": LongColumn,
+                "type": StringColumn,
+                "text": StringColumn,
+                "z": LongColumn,
+                "t": LongColumn,
+                "channel": StringColumn,
+                "area": DoubleColumn,
+                "length": DoubleColumn,
+                "borderLength": DoubleColumn,
+                # "points",
+                # "min",
+                # "max",
+                # "sum",
+                # "mean",
+                # "std_dev",
+                "X": DoubleColumn,
+                "Y": DoubleColumn,
+                "Width": DoubleColumn,
+                "Height": DoubleColumn,
+                # "RadiusX",
+                # "RadiusY",
+                # "X1",
+                # "Y1",
+                # "X2",
+                # "Y2",
+                "Points": StringColumn}
 
 
 def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
@@ -229,6 +264,41 @@ def add_shape_coords(shape, row_data, pixel_size_x, pixel_size_y):
         row_data['area'] = abs(0.5 * total)
     if 'area' in row_data and pixel_size_x and pixel_size_y:
         row_data['area'] = row_data['area'] * pixel_size_x * pixel_size_y
+
+
+def create_column(name, data=[]):
+    col_type = COLUMN_TYPES[name]
+    if col_type is StringColumn:
+        return StringColumn(name, '', DEFAULT_COLUMN_SIZE, data)
+    else:
+        return col_type(name, '', data)
+
+
+def write_table(conn, export_data, script_params, units_symbol):
+    """Write the list of data to an OMERO.table, return a file annotation."""
+    table_name = script_params.get("File_Name", "")
+    if len(table_name) == 0:
+        table_name = DEFAULT_FILE_NAME
+    if table_name.endswith('.csv'):
+        table_name = table_name.replace('.csv', '')
+    columns = [create_column(name, []) for name in COLUMN_NAMES]
+    resources = conn.c.sf.sharedResources()
+    repository_id = resources.repositories().descriptions[0].getId().getValue()
+    table = resources.newTable(repository_id, table_name)
+    table.initialize(columns)
+
+    data = []
+    for name in COLUMN_NAMES:
+        col_data = [row.get(name) for row in export_data]
+        data.append(create_column(name, col_data))
+    table.addData(data)
+    orig_file = table.getOriginalFile()
+    table.close()
+    orig_file_id = orig_file.id.val
+    file_ann = FileAnnotationI()
+    file_ann.setFile(OriginalFileI(orig_file_id, False))
+    file_ann = conn.getUpdateService().saveAndReturnObject(file_ann)
+    return FileAnnotationWrapper(conn, file_ann)
 
 
 def write_csv(conn, export_data, script_params, units_symbol):
@@ -314,7 +384,8 @@ def batch_roi_export(conn, script_params):
         export_data.extend(get_export_data(conn, script_params, image, units))
 
     # Write to csv
-    file_ann = write_csv(conn, export_data, script_params, symbol)
+    # file_ann = write_csv(conn, export_data, script_params, symbol)
+    file_ann = write_table(conn, export_data, script_params, symbol)
     if dtype == "Image":
         link_annotation(images, file_ann)
     else:
